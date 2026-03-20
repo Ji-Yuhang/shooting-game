@@ -1,8 +1,9 @@
 import { defineConfig } from "vite";
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
+  base: command === "build" ? "/shooting-game/" : "/",
   server: {
     host: "0.0.0.0",
     port: 5173
   }
-});
+}));
