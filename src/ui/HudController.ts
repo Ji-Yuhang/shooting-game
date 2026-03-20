@@ -60,7 +60,7 @@ export class HudController {
           <div class="hud-title">Controls</div>
           <div class="controls">
             WASD 移动 / 右键瞄准 / 左键蓄力发射<br />
-            C 蹲下 / Q E 探头 / G 烟雾弹 / Alt 自由观察 / R 重开 / Esc 暂停
+            C 蹲下 / Q E 探头 / G 烟雾弹 / F4 碰撞调试 / Alt 自由观察 / R 重开 / Esc 暂停
           </div>
         </div>
         <div class="hud-panel">

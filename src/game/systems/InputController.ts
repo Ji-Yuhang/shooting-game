@@ -8,6 +8,7 @@ export type InputSnapshot = {
   aimingHeld: boolean;
   chargeHeld: boolean;
   smokePressed: boolean;
+  collisionDebugPressed: boolean;
   crouchPressed: boolean;
   restartPressed: boolean;
   pausePressed: boolean;
@@ -74,6 +75,7 @@ export class InputController {
       aimingHeld: this.pressed.has("MouseRight"),
       chargeHeld: this.pressed.has("MouseLeft"),
       smokePressed: this.consumeJustPressed("KeyG"),
+      collisionDebugPressed: this.consumeJustPressed("F4"),
       crouchPressed: this.consumeJustPressed("KeyC") || this.consumeJustPressed("ControlLeft"),
       restartPressed: this.consumeJustPressed("KeyR"),
       pausePressed: this.consumeJustPressed("Escape"),

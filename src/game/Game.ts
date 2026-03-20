@@ -1,11 +1,13 @@
 import RAPIER from "@dimforge/rapier3d-compat";
 import * as THREE from "three";
-import { COVER_NODES, ENEMY_SPAWNS, OBSTACLES, PLAYER_SPAWN } from "../data/arena";
+import { COVER_NODES, ENEMY_SPAWNS, OBSTACLES, PLAYER_SPAWNS } from "../data/arena";
 import { GAME_CONFIG } from "./config";
 import {
   computeArrowSpeed,
   computeChargeRatio,
-  integrateProjectile
+  integrateProjectile,
+  segmentGroundHitFraction,
+  segmentObstacleHit
 } from "./logic";
 import type {
   ActorState,
@@ -58,6 +60,21 @@ type SmokeCloudVisual = {
   puffs: THREE.Mesh[];
 };
 
+type SmokeGrenadeVisual = {
+  state: {
+    id: number;
+    ownerId: string;
+    position: THREE.Vector3;
+    previousPosition: THREE.Vector3;
+    velocity: THREE.Vector3;
+    lifeRemaining: number;
+    alive: boolean;
+  };
+  mesh: THREE.Mesh;
+  trail: THREE.Line;
+  trailPositions: Float32Array;
+};
+
 class ShootingGame {
   private readonly scene = new THREE.Scene();
   private readonly renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -75,6 +92,7 @@ class ShootingGame {
   private readonly trajectoryImpactMarker: THREE.Mesh;
   private readonly deathCrates: DeathCrate[] = [];
   private readonly smokeClouds: SmokeCloudVisual[] = [];
+  private readonly smokeGrenades: SmokeGrenadeVisual[] = [];
   private readonly world = new RAPIER.World({ x: 0, y: -GAME_CONFIG.combat.gravity, z: 0 });
   private readonly player: ActorState;
   private readonly playerCombat: CombatState = {
@@ -102,6 +120,8 @@ class ShootingGame {
   private hudMessage = "";
   private hudMessageUntil = 0;
   private playerSmokeCooldownRemaining = 0;
+  private nextSmokeGrenadeId = 1;
+  private projectileDebugEnabled = true;
   private readonly bowTexture = this.createBowTexture();
 
   constructor(private readonly root: HTMLElement) {
@@ -115,6 +135,7 @@ class ShootingGame {
     this.input = new InputController(this.renderer.domElement);
     this.cameraRig = new CameraRig(1);
     this.projectileSystem = new ProjectileSystem(this.scene);
+    this.projectileSystem.setDebugVisualEnabled(this.projectileDebugEnabled);
     this.player = this.createActor("player", "player", GAME_CONFIG.player.health);
     this.trajectoryMaterial = new THREE.LineBasicMaterial({
       color: "#f0d184",
@@ -168,7 +189,7 @@ class ShootingGame {
 
   private buildScene(): void {
     this.scene.background = new THREE.Color("#15302d");
-    this.scene.fog = new THREE.Fog("#15302d", 30, 78);
+    this.scene.fog = new THREE.Fog("#15302d", 38, 98);
 
     const hemi = new THREE.HemisphereLight("#eff8ee", "#315648", 1.55);
     this.scene.add(hemi);
@@ -177,13 +198,14 @@ class ShootingGame {
     this.scene.add(ambient);
 
     const sun = new THREE.DirectionalLight("#fff2cb", 1.95);
-    sun.position.set(15, 30, 14);
+    sun.position.set(20, 34, 18);
     sun.castShadow = true;
     sun.shadow.mapSize.set(2048, 2048);
-    sun.shadow.camera.left = -28;
-    sun.shadow.camera.right = 28;
-    sun.shadow.camera.top = 28;
-    sun.shadow.camera.bottom = -28;
+    const shadowExtent = GAME_CONFIG.arenaSize * 0.7;
+    sun.shadow.camera.left = -shadowExtent;
+    sun.shadow.camera.right = shadowExtent;
+    sun.shadow.camera.top = shadowExtent;
+    sun.shadow.camera.bottom = -shadowExtent;
     this.scene.add(sun);
 
     const ground = new THREE.Mesh(
@@ -223,7 +245,7 @@ class ShootingGame {
 
   private spawnActors(): void {
     const roles: EnemyRole[] = ["suppressor", "flanker", "harasser", "rescuer"];
-    this.player.position.copy(PLAYER_SPAWN);
+    this.player.position.copy(this.getRandomPlayerSpawn());
     this.player.forward.set(0, 0, -1);
     this.player.desiredForward.copy(this.player.forward);
 
@@ -547,14 +569,14 @@ class ShootingGame {
     }
 
     this.world.createCollider(
-      RAPIER.ColliderDesc.cylinder(obstacle.size.y * 0.5, obstacle.size.x).setTranslation(
+      RAPIER.ColliderDesc.cylinder(obstacle.size.y * 0.5, obstacle.size.x * 1.1).setTranslation(
         obstacle.position.x,
         obstacle.position.y,
         obstacle.position.z
       )
     );
     this.world.createCollider(
-      RAPIER.ColliderDesc.ball(obstacle.size.x * 1.3).setTranslation(
+      RAPIER.ColliderDesc.ball(obstacle.size.x * 1.8).setTranslation(
         obstacle.position.x,
         obstacle.position.y + obstacle.size.y * 0.65,
         obstacle.position.z
@@ -596,6 +618,14 @@ class ShootingGame {
     if (input.restartPressed) {
       this.resetRound();
     }
+    if (input.collisionDebugPressed) {
+      this.projectileDebugEnabled = !this.projectileDebugEnabled;
+      this.projectileSystem.setDebugVisualEnabled(this.projectileDebugEnabled);
+      this.pushHudMessage(
+        this.projectileDebugEnabled ? "已开启箭矢碰撞调试可视化" : "已关闭箭矢碰撞调试可视化",
+        time / 1000
+      );
+    }
 
     if (this.overlay === null) {
       this.accumulator += deltaSeconds;
@@ -632,6 +662,7 @@ class ShootingGame {
       state: this.playerCombat,
       input,
       world: this.world,
+      obstacles: this.obstacles,
       cameraRig: this.cameraRig,
       projectileSystem: this.projectileSystem,
       timeSeconds,
@@ -656,11 +687,14 @@ class ShootingGame {
 
     this.projectileSystem.update(deltaSeconds, {
       world: this.world,
+      obstacles: this.obstacles,
+      arenaHalfSize: GAME_CONFIG.arenaSize * 0.5,
       player: this.player,
       enemies: this.enemies.map((enemy) => enemy.actor),
       onActorDamaged: (actorId, damage) => this.applyDamage(actorId, damage, timeSeconds)
     });
 
+    this.updateSmokeGrenades(deltaSeconds);
     this.updateActorRecovery(deltaSeconds);
     this.updateSmokeClouds(deltaSeconds);
     this.finalizeEnemyDeaths(timeSeconds);
@@ -802,19 +836,47 @@ class ShootingGame {
       }
 
       const direction = segment.normalize();
-      const hit = this.world.castRay(
+      const probeStart = currentPosition
+        .clone()
+        .addScaledVector(direction, GAME_CONFIG.combat.projectileTipOffset);
+      const probeEnd = next.position
+        .clone()
+        .addScaledVector(direction, GAME_CONFIG.combat.projectileTipOffset);
+      const worldHit = this.world.castRay(
         new RAPIER.Ray(
-          { x: currentPosition.x, y: currentPosition.y, z: currentPosition.z },
+          { x: probeStart.x, y: probeStart.y, z: probeStart.z },
           { x: direction.x, y: direction.y, z: direction.z }
         ),
         segmentDistance,
-        true
+        false
       );
+      const obstacleHit = segmentObstacleHit(
+        probeStart,
+        probeEnd,
+        this.obstacles,
+        GAME_CONFIG.combat.projectileRadius
+      );
+      const groundHit = segmentGroundHitFraction(
+        probeStart,
+        probeEnd,
+        GAME_CONFIG.combat.projectileRadius
+      );
+      const worldHitDistance = worldHit?.timeOfImpact ?? Number.POSITIVE_INFINITY;
+      const obstacleHitDistance =
+        obstacleHit !== null
+          ? segmentDistance * obstacleHit.fraction
+          : Number.POSITIVE_INFINITY;
+      const groundHitDistance =
+        groundHit !== null ? segmentDistance * groundHit : Number.POSITIVE_INFINITY;
+      const blockingDistance = Math.min(worldHitDistance, obstacleHitDistance, groundHitDistance);
 
-      if (hit) {
-        const impact = currentPosition
+      if (Number.isFinite(blockingDistance)) {
+        const impactProbe = probeStart
           .clone()
-          .add(direction.multiplyScalar(hit.timeOfImpact));
+          .add(direction.multiplyScalar(blockingDistance));
+        const impact = impactProbe
+          .clone()
+          .addScaledVector(direction, -GAME_CONFIG.combat.projectileTipOffset);
         this.writeTrajectoryPoint(pointCount, impact);
         pointCount += 1;
         this.trajectoryImpactMarker.position.copy(impact);
@@ -1064,6 +1126,9 @@ class ShootingGame {
     if (this.playerCombat.mode === "charging") {
       tags.push("蓄力");
     }
+    if (this.projectileDebugEnabled) {
+      tags.push("碰撞调试");
+    }
 
     const chargeRatio = this.getCurrentChargeRatio();
     const chargePercent = Math.round(chargeRatio * 100);
@@ -1240,7 +1305,10 @@ class ShootingGame {
       return false;
     }
 
-    this.spawnSmokeCloud(target);
+    const origin = thrower.actor.position
+      .clone()
+      .add(new THREE.Vector3(0.18, thrower.actor.isCrouching ? 0.95 : 1.35, 0));
+    this.launchSmokeGrenade(thrower.actor.id, origin, target);
     thrower.smokeCooldownRemaining = GAME_CONFIG.ai.smokeCooldown;
     this.pushHudMessage(reason === "rescue" ? "敌人投出烟雾掩护救援" : "敌人投出烟雾封锁视野", performance.now() / 1000);
     return true;
@@ -1310,15 +1378,164 @@ class ShootingGame {
     if (flatOffset.lengthSq() < 0.0001) {
       flatOffset.copy(this.player.forward);
     }
+    const planarDistance = flatOffset.length();
     flatOffset.normalize();
     const smokeTarget = this.player.position
       .clone()
-      .add(flatOffset.multiplyScalar(8))
+      .add(
+        flatOffset.multiplyScalar(
+          THREE.MathUtils.clamp(planarDistance * 0.55, 7, 13)
+        )
+      )
       .setY(0.1);
 
-    this.spawnSmokeCloud(smokeTarget);
+    const origin = this.player.position
+      .clone()
+      .add(this.player.forward.clone().multiplyScalar(0.45))
+      .add(new THREE.Vector3(0, this.player.isCrouching ? 0.98 : 1.34, 0));
+    this.launchSmokeGrenade(this.player.id, origin, smokeTarget);
     this.playerSmokeCooldownRemaining = GAME_CONFIG.ai.smokeCooldown;
     this.pushHudMessage("你投出了烟雾弹", timeSeconds);
+  }
+
+  private launchSmokeGrenade(
+    ownerId: string,
+    origin: THREE.Vector3,
+    target: THREE.Vector3
+  ): void {
+    const offset = target.clone().sub(origin);
+    const planarDistance = offset.clone().setY(0).length();
+    const flightSeconds = THREE.MathUtils.clamp(
+      planarDistance / 18,
+      GAME_CONFIG.smoke.throwFlightMinSeconds,
+      GAME_CONFIG.smoke.throwFlightMaxSeconds
+    );
+    const velocity = offset.clone().divideScalar(flightSeconds);
+    velocity.y =
+      (offset.y + 0.5 * GAME_CONFIG.combat.gravity * flightSeconds * flightSeconds) /
+      flightSeconds;
+
+    const mesh = new THREE.Mesh(
+      new THREE.SphereGeometry(0.12, 10, 10),
+      new THREE.MeshStandardMaterial({
+        color: "#cfd8df",
+        emissive: "#ffffff",
+        emissiveIntensity: 0.18,
+        roughness: 0.35,
+        metalness: 0.08
+      })
+    );
+    mesh.castShadow = true;
+    mesh.position.copy(origin);
+
+    const trailPositions = new Float32Array(6);
+    trailPositions[0] = origin.x;
+    trailPositions[1] = origin.y;
+    trailPositions[2] = origin.z;
+    trailPositions[3] = origin.x;
+    trailPositions[4] = origin.y;
+    trailPositions[5] = origin.z;
+    const trail = new THREE.Line(
+      new THREE.BufferGeometry(),
+      new THREE.LineBasicMaterial({
+        color: "#f2f6f8",
+        transparent: true,
+        opacity: 0.8
+      })
+    );
+    trail.geometry.setAttribute("position", new THREE.BufferAttribute(trailPositions, 3));
+    trail.geometry.setDrawRange(0, 2);
+
+    this.scene.add(mesh, trail);
+    this.smokeGrenades.push({
+      state: {
+        id: this.nextSmokeGrenadeId,
+        ownerId,
+        position: origin.clone(),
+        previousPosition: origin.clone(),
+        velocity,
+        lifeRemaining: GAME_CONFIG.smoke.throwFlightMaxSeconds + 0.5,
+        alive: true
+      },
+      mesh,
+      trail,
+      trailPositions
+    });
+    this.nextSmokeGrenadeId += 1;
+  }
+
+  private updateSmokeGrenades(deltaSeconds: number): void {
+    for (const grenade of this.smokeGrenades) {
+      if (!grenade.state.alive) {
+        continue;
+      }
+
+      grenade.state.lifeRemaining -= deltaSeconds;
+      grenade.state.previousPosition.copy(grenade.state.position);
+
+      const next = integrateProjectile(
+        grenade.state.position,
+        grenade.state.velocity,
+        GAME_CONFIG.combat.gravity,
+        deltaSeconds
+      );
+      const start = grenade.state.position.clone();
+      const end = next.position.clone();
+      const direction = end.clone().sub(start);
+      const distance = direction.length();
+
+      if (distance <= 0.0001) {
+        continue;
+      }
+      direction.normalize();
+
+      const worldHit = this.world.castRay(
+        new RAPIER.Ray(
+          { x: start.x, y: start.y, z: start.z },
+          { x: direction.x, y: direction.y, z: direction.z }
+        ),
+        distance,
+        true
+      );
+
+      if (worldHit) {
+        const impact = start.clone().add(direction.multiplyScalar(worldHit.timeOfImpact));
+        this.detonateSmokeGrenade(grenade, impact);
+        continue;
+      }
+
+      grenade.state.position.copy(next.position);
+      grenade.state.velocity.copy(next.velocity);
+      grenade.mesh.position.copy(grenade.state.position);
+      grenade.trailPositions[0] = grenade.state.previousPosition.x;
+      grenade.trailPositions[1] = grenade.state.previousPosition.y;
+      grenade.trailPositions[2] = grenade.state.previousPosition.z;
+      grenade.trailPositions[3] = grenade.state.position.x;
+      grenade.trailPositions[4] = grenade.state.position.y;
+      grenade.trailPositions[5] = grenade.state.position.z;
+      (
+        grenade.trail.geometry.getAttribute("position") as THREE.BufferAttribute
+      ).needsUpdate = true;
+
+      if (grenade.state.position.y <= 0.12 || grenade.state.lifeRemaining <= 0) {
+        this.detonateSmokeGrenade(grenade, grenade.state.position);
+      }
+    }
+
+    for (let index = this.smokeGrenades.length - 1; index >= 0; index -= 1) {
+      if (!this.smokeGrenades[index].state.alive) {
+        this.smokeGrenades.splice(index, 1);
+      }
+    }
+  }
+
+  private detonateSmokeGrenade(
+    grenade: SmokeGrenadeVisual,
+    impact: THREE.Vector3
+  ): void {
+    grenade.state.alive = false;
+    this.scene.remove(grenade.mesh, grenade.trail);
+    this.spawnSmokeCloud(impact.clone().setY(0.1));
   }
 
   private spawnSmokeCloud(target: THREE.Vector3): void {
@@ -1408,8 +1625,13 @@ class ShootingGame {
       this.scene.remove(smoke.group);
     }
     this.smokeClouds.length = 0;
+    for (const grenade of this.smokeGrenades) {
+      this.scene.remove(grenade.mesh, grenade.trail);
+    }
+    this.smokeGrenades.length = 0;
+    this.nextSmokeGrenadeId = 1;
 
-    this.player.position.copy(PLAYER_SPAWN);
+    this.player.position.copy(this.getRandomPlayerSpawn());
     this.player.forward.set(0, 0, -1);
     this.player.desiredForward.copy(this.player.forward);
     this.player.velocity.set(0, 0, 0);
@@ -1459,6 +1681,11 @@ class ShootingGame {
 
     this.overlay = "intro";
     this.input.exitPointerLock();
+  }
+
+  private getRandomPlayerSpawn(): THREE.Vector3 {
+    const index = Math.floor(Math.random() * PLAYER_SPAWNS.length);
+    return PLAYER_SPAWNS[index];
   }
 }
 

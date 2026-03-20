@@ -4,10 +4,12 @@ import {
   computeArrowSpeed,
   computeChargeRatio,
   integrateProjectile,
+  pointInsideAnyObstacle,
   pickBestCoverNode,
+  segmentObstacleHit,
   updateExposureValue
 } from "../game/logic";
-import type { CoverNode } from "../game/types";
+import type { CoverNode, ObstacleSpec } from "../game/types";
 
 describe("computeChargeRatio", () => {
   it("stays at zero below minimum charge", () => {
@@ -80,5 +82,74 @@ describe("pickBestCoverNode", () => {
     );
 
     expect(result?.id).toBe("free");
+  });
+});
+
+describe("segmentObstacleHit", () => {
+  it("hits the nearest blocking obstacle on the segment", () => {
+    const obstacles: ObstacleSpec[] = [
+      {
+        id: "box-near",
+        shape: "box",
+        position: new THREE.Vector3(0, 1, 0),
+        size: new THREE.Vector3(1, 2, 1),
+        color: "#888",
+        heightClass: "full"
+      },
+      {
+        id: "box-far",
+        shape: "box",
+        position: new THREE.Vector3(3, 1, 0),
+        size: new THREE.Vector3(1, 2, 1),
+        color: "#888",
+        heightClass: "full"
+      }
+    ];
+
+    const hit = segmentObstacleHit(
+      new THREE.Vector3(-2, 1, 0),
+      new THREE.Vector3(4, 1, 0),
+      obstacles
+    );
+
+    expect(hit?.obstacleId).toBe("box-near");
+    expect(hit?.fraction).toBeCloseTo(0.25);
+  });
+
+  it("supports collision padding for near-miss edge cases", () => {
+    const obstacles: ObstacleSpec[] = [
+      {
+        id: "thin-wall",
+        shape: "box",
+        position: new THREE.Vector3(0, 1, 0),
+        size: new THREE.Vector3(2, 2, 0.8),
+        color: "#666",
+        heightClass: "full"
+      }
+    ];
+
+    const start = new THREE.Vector3(-2, 2.12, 0);
+    const end = new THREE.Vector3(2, 2.12, 0);
+    expect(segmentObstacleHit(start, end, obstacles, 0)).toBeNull();
+    expect(segmentObstacleHit(start, end, obstacles, 0.15)?.obstacleId).toBe("thin-wall");
+  });
+});
+
+describe("pointInsideAnyObstacle", () => {
+  it("uses optional padding when checking inside state", () => {
+    const obstacles: ObstacleSpec[] = [
+      {
+        id: "rock",
+        shape: "sphere",
+        position: new THREE.Vector3(0, 1, 0),
+        size: new THREE.Vector3(1, 1, 1),
+        color: "#999",
+        heightClass: "full"
+      }
+    ];
+
+    const point = new THREE.Vector3(1.08, 1, 0);
+    expect(pointInsideAnyObstacle(point, obstacles)).toBe(false);
+    expect(pointInsideAnyObstacle(point, obstacles, 0.1)).toBe(true);
   });
 });

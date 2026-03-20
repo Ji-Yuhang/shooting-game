@@ -454,7 +454,8 @@ export class AISystem {
         enemy.actor,
         target,
         context.projectileSystem,
-        context.world
+        context.world,
+        context.obstacles
       );
       if (fired) {
         enemy.attackCooldownRemaining =

@@ -38,6 +38,9 @@ export type GameConfig = {
     arrowLifeSeconds: number;
     closeRangeDistance: number;
     mediumRangeDistance: number;
+    projectileRadius: number;
+    projectileTipOffset: number;
+    coverBlockEpsilon: number;
   };
   ai: {
     health: number;
@@ -65,19 +68,35 @@ export type GameConfig = {
     smokeCooldown: number;
     rescueAbortDamageWindow: number;
   };
+  hitboxes: {
+    standing: Array<{
+      offset: THREE.Vector3;
+      radius: number;
+    }>;
+    crouching: Array<{
+      offset: THREE.Vector3;
+      radius: number;
+    }>;
+    downed: Array<{
+      offset: THREE.Vector3;
+      radius: number;
+    }>;
+  };
   smoke: {
     radius: number;
     buildSeconds: number;
     lifeSeconds: number;
+    throwFlightMinSeconds: number;
+    throwFlightMaxSeconds: number;
   };
 };
 
 export const GAME_CONFIG: GameConfig = {
-  arenaSize: 44,
+  arenaSize: 56,
   fixedTimeStep: 1 / 60,
   maxSubSteps: 4,
   player: {
-    radius: 0.42,
+    radius: 0.38,
     standHeight: 1.8,
     crouchHeight: 1.2,
     eyeStandHeight: 1.6,
@@ -109,7 +128,10 @@ export const GAME_CONFIG: GameConfig = {
     damage: 35,
     arrowLifeSeconds: 5,
     closeRangeDistance: 9,
-    mediumRangeDistance: 18
+    mediumRangeDistance: 18,
+    projectileRadius: 0.08,
+    projectileTipOffset: 0.5,
+    coverBlockEpsilon: 0.04
   },
   ai: {
     health: 70,
@@ -137,9 +159,26 @@ export const GAME_CONFIG: GameConfig = {
     smokeCooldown: 10,
     rescueAbortDamageWindow: 0.22
   },
+  hitboxes: {
+    standing: [
+      { offset: new THREE.Vector3(0, 0.48, 0), radius: 0.28 },
+      { offset: new THREE.Vector3(0, 0.9, 0), radius: 0.23 },
+      { offset: new THREE.Vector3(0, 1.3, 0), radius: 0.18 }
+    ],
+    crouching: [
+      { offset: new THREE.Vector3(0, 0.36, 0), radius: 0.27 },
+      { offset: new THREE.Vector3(0, 0.7, 0), radius: 0.21 }
+    ],
+    downed: [
+      { offset: new THREE.Vector3(0, 0.2, 0), radius: 0.31 },
+      { offset: new THREE.Vector3(0.2, 0.18, 0), radius: 0.2 }
+    ]
+  },
   smoke: {
     radius: 5.5,
     buildSeconds: 2.2,
-    lifeSeconds: 9
+    lifeSeconds: 9,
+    throwFlightMinSeconds: 0.48,
+    throwFlightMaxSeconds: 0.9
   }
 };

@@ -84,7 +84,8 @@ export function resolveCircleObstacleCollisions(
           flat.addScaledVector(delta, radius - distance + 0.001);
         }
       } else {
-        const obstacleRadius = obstacle.shape === "cylinder" ? obstacle.size.x : obstacle.size.x;
+        const obstacleRadius =
+          obstacle.shape === "cylinder" ? obstacle.size.x * 1.1 : obstacle.size.x;
         const center = new THREE.Vector2(obstacle.position.x, obstacle.position.z);
         const delta = flat.clone().sub(center);
         const distance = delta.length();

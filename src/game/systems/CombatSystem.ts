@@ -3,9 +3,11 @@ import * as THREE from "three";
 import { GAME_CONFIG } from "../config";
 import {
   computeArrowSpeed,
-  computeChargeRatio
+  computeChargeRatio,
+  pointInsideAnyObstacle,
+  segmentObstacleHit
 } from "../logic";
-import type { ActorState, CombatState } from "../types";
+import type { ActorState, CombatState, ObstacleSpec } from "../types";
 import type { InputSnapshot } from "./InputController";
 import { CameraRig } from "./CameraRig";
 import { ProjectileSystem } from "./ProjectileSystem";
@@ -15,6 +17,7 @@ type PlayerCombatContext = {
   state: CombatState;
   input: InputSnapshot;
   world: RAPIER.World;
+  obstacles: ObstacleSpec[];
   cameraRig: CameraRig;
   projectileSystem: ProjectileSystem;
   timeSeconds: number;
@@ -71,7 +74,7 @@ export class CombatSystem {
   }
 
   private tryFirePlayerShot(context: PlayerCombatContext): void {
-    const { state, player, cameraRig, world, projectileSystem, timeSeconds, showMessage } =
+    const { state, player, cameraRig, world, obstacles, projectileSystem, timeSeconds, showMessage } =
       context;
     const rawChargeRatio = computeChargeRatio(
       state.chargeSeconds,
@@ -90,14 +93,45 @@ export class CombatSystem {
       showMessage("蓄力不足");
       return;
     }
+
+    if (
+      this.isPointInsideCollider(world, shotOrigin) ||
+      pointInsideAnyObstacle(shotOrigin, obstacles, GAME_CONFIG.combat.projectileRadius)
+    ) {
+      state.blockedShotUntil = timeSeconds + 0.75;
+      showMessage("箭矢起点被掩体阻挡");
+      return;
+    }
+
     const direction = aimTarget.clone().sub(shotOrigin).normalize();
+    const probeOrigin = shotOrigin
+      .clone()
+      .addScaledVector(direction, GAME_CONFIG.combat.projectileTipOffset);
+    if (
+      this.isPointInsideCollider(world, probeOrigin) ||
+      pointInsideAnyObstacle(probeOrigin, obstacles, GAME_CONFIG.combat.projectileRadius)
+    ) {
+      state.blockedShotUntil = timeSeconds + 0.75;
+      showMessage("箭头被掩体卡住");
+      return;
+    }
+
     const blockedRay = new RAPIER.Ray(
-      { x: shotOrigin.x, y: shotOrigin.y, z: shotOrigin.z },
+      { x: probeOrigin.x, y: probeOrigin.y, z: probeOrigin.z },
       { x: direction.x, y: direction.y, z: direction.z }
     );
-    const blockedHit = world.castRay(blockedRay, 1.15, true);
+    const blockedHit = world.castRay(blockedRay, 1.15, false);
+    const closeObstacleHit = segmentObstacleHit(
+      probeOrigin,
+      probeOrigin.clone().add(direction.clone().multiplyScalar(1.15)),
+      obstacles,
+      GAME_CONFIG.combat.projectileRadius
+    );
 
-    if (blockedHit && blockedHit.timeOfImpact < 0.9) {
+    if (
+      (blockedHit && blockedHit.timeOfImpact < 0.9) ||
+      (closeObstacleHit && closeObstacleHit.fraction < 0.9)
+    ) {
       state.blockedShotUntil = timeSeconds + 0.75;
       showMessage("掩体挡住了箭路");
       return;
@@ -125,14 +159,51 @@ export class CombatSystem {
     enemy: ActorState,
     target: THREE.Vector3,
     projectileSystem: ProjectileSystem,
-    world: RAPIER.World
+    world: RAPIER.World,
+    obstacles: ObstacleSpec[]
   ): boolean {
-    const origin = enemy.position
-      .clone()
-      .add(new THREE.Vector3(0.28, enemy.isCrouching ? 0.95 : 1.45, 0));
-    const direction = target.clone().sub(origin).normalize();
+    const origin = this.getEnemyShotOrigin(enemy);
+    const toTarget = target.clone().sub(origin);
+    const shotDistance = toTarget.length();
+    if (shotDistance <= 0.0001) {
+      return false;
+    }
+    const direction = toTarget.clone().normalize();
 
-    if (this.isShotBlocked(world, origin, direction, 1.15)) {
+    if (
+      this.isPointInsideCollider(world, origin) ||
+      pointInsideAnyObstacle(origin, obstacles, GAME_CONFIG.combat.projectileRadius)
+    ) {
+      return false;
+    }
+
+    const probeOrigin = origin
+      .clone()
+      .addScaledVector(direction, GAME_CONFIG.combat.projectileTipOffset);
+
+    if (
+      this.isPointInsideCollider(world, probeOrigin) ||
+      pointInsideAnyObstacle(probeOrigin, obstacles, GAME_CONFIG.combat.projectileRadius)
+    ) {
+      return false;
+    }
+
+    if (
+      this.isShotBlocked(world, probeOrigin, direction, 1.15) ||
+      this.hasObstacleOnPath(
+        probeOrigin,
+        probeOrigin.clone().add(direction.clone().multiplyScalar(1.15)),
+        obstacles
+      )
+    ) {
+      return false;
+    }
+
+    const obstructionDistance = this.getWorldHitDistance(world, probeOrigin, direction, shotDistance);
+    if (
+      (obstructionDistance !== null && obstructionDistance < shotDistance - 0.2) ||
+      this.hasObstacleOnPath(probeOrigin, target, obstacles)
+    ) {
       return false;
     }
 
@@ -186,7 +257,52 @@ export class CombatSystem {
       { x: origin.x, y: origin.y, z: origin.z },
       { x: direction.x, y: direction.y, z: direction.z }
     );
-    const blockedHit = world.castRay(blockedRay, distance, true);
+    const blockedHit = world.castRay(blockedRay, distance, false);
     return Boolean(blockedHit && blockedHit.timeOfImpact < 0.9);
+  }
+
+  private getWorldHitDistance(
+    world: RAPIER.World,
+    origin: THREE.Vector3,
+    direction: THREE.Vector3,
+    distance: number
+  ): number | null {
+    const ray = new RAPIER.Ray(
+      { x: origin.x, y: origin.y, z: origin.z },
+      { x: direction.x, y: direction.y, z: direction.z }
+    );
+    const hit = world.castRay(ray, distance, false);
+    return hit ? hit.timeOfImpact : null;
+  }
+
+  private hasObstacleOnPath(
+    start: THREE.Vector3,
+    end: THREE.Vector3,
+    obstacles: ObstacleSpec[]
+  ): boolean {
+    const hit = segmentObstacleHit(
+      start,
+      end,
+      obstacles,
+      GAME_CONFIG.combat.projectileRadius
+    );
+    return Boolean(hit && hit.fraction < 0.99);
+  }
+
+  private isPointInsideCollider(world: RAPIER.World, point: THREE.Vector3): boolean {
+    let inside = false;
+    world.intersectionsWithPoint(
+      { x: point.x, y: point.y, z: point.z },
+      () => {
+        inside = true;
+        return false;
+      }
+    );
+    return inside;
+  }
+
+  private getEnemyShotOrigin(enemy: ActorState): THREE.Vector3 {
+    const chestHeight = enemy.isCrouching ? 0.95 : 1.45;
+    return enemy.position.clone().add(new THREE.Vector3(0, chestHeight, 0));
   }
 }
