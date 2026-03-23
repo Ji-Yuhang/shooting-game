@@ -28,6 +28,7 @@ import { InputController } from "./systems/InputController";
 import { ProjectileSystem } from "./systems/ProjectileSystem";
 import { AISystem, type EnemyAgent } from "./systems/AISystem";
 import { HudController } from "../ui/HudController";
+import { AudioSystem } from "./systems/AudioSystem";
 
 type GameOverlay = "intro" | "paused" | "victory" | "defeat" | null;
 
@@ -86,6 +87,7 @@ class ShootingGame {
   private readonly playerVisual: CharacterVisual;
   private readonly enemyVisuals: CharacterVisual[] = [];
   private readonly projectileSystem: ProjectileSystem;
+  private readonly audio = new AudioSystem();
   private readonly trajectoryLine: THREE.Line;
   private readonly trajectoryMaterial: THREE.LineBasicMaterial;
   private readonly trajectoryPositions = new Float32Array(3 * 32);
@@ -122,6 +124,8 @@ class ShootingGame {
   private playerSmokeCooldownRemaining = 0;
   private nextSmokeGrenadeId = 1;
   private projectileDebugEnabled = true;
+  private previousPlayerCombatMode: CombatState["mode"] = "idle";
+  private previousEnemyCombatModes: CombatState["mode"][] = [];
   private readonly bowTexture = this.createBowTexture();
 
   constructor(private readonly root: HTMLElement) {
@@ -169,6 +173,7 @@ class ShootingGame {
 
     this.buildScene();
     this.spawnActors();
+    this.previousEnemyCombatModes = this.enemies.map((enemy) => enemy.combat.mode);
     this.hud.attach(this.root);
 
     this.root.addEventListener("click", this.handleRootClick);
@@ -183,6 +188,7 @@ class ShootingGame {
   dispose(): void {
     cancelAnimationFrame(this.loopHandle);
     this.input.dispose();
+    this.audio.dispose();
     this.root.removeEventListener("click", this.handleRootClick);
     window.removeEventListener("resize", this.handleResize);
   }
@@ -585,6 +591,7 @@ class ShootingGame {
   }
 
   private handleRootClick = (): void => {
+    this.audio.unlock();
     if (this.overlay === "victory" || this.overlay === "defeat") {
       return;
     }
@@ -657,6 +664,7 @@ class ShootingGame {
 
   private updateFixed(deltaSeconds: number, input: ReturnType<InputController["captureFrame"]>, timeSeconds: number): void {
     this.updatePlayer(deltaSeconds, input, timeSeconds);
+    this.audio.setListener(this.player.position, this.player.forward);
     this.combatSystem.updatePlayer(deltaSeconds, {
       player: this.player,
       state: this.playerCombat,
@@ -666,8 +674,16 @@ class ShootingGame {
       cameraRig: this.cameraRig,
       projectileSystem: this.projectileSystem,
       timeSeconds,
-      showMessage: (text) => this.pushHudMessage(text, timeSeconds)
+      showMessage: (text) => this.pushHudMessage(text, timeSeconds),
+      onShotFired: (_ownerId, origin) => this.audio.playArrowRelease(origin)
     });
+    if (
+      this.previousPlayerCombatMode !== "charging" &&
+      this.playerCombat.mode === "charging"
+    ) {
+      this.audio.playBowDraw(this.player.position);
+    }
+    this.previousPlayerCombatMode = this.playerCombat.mode;
     this.player.combatMode = this.playerCombat.mode;
     this.tryDeployPlayerSmoke(input, timeSeconds);
 
@@ -682,7 +698,17 @@ class ShootingGame {
       projectileSystem: this.projectileSystem,
       combatSystem: this.combatSystem,
       smokes: this.smokeClouds.map((cloud) => cloud.state),
-      deploySmoke: (throwerId, target, reason) => this.deploySmoke(throwerId, target, reason)
+      deploySmoke: (throwerId, target, reason) => this.deploySmoke(throwerId, target, reason),
+      onEnemyShotFired: (_ownerId, origin) => this.audio.playArrowRelease(origin)
+    });
+    this.enemies.forEach((enemy, index) => {
+      if (
+        this.previousEnemyCombatModes[index] !== "charging" &&
+        enemy.combat.mode === "charging"
+      ) {
+        this.audio.playBowDraw(enemy.actor.position);
+      }
+      this.previousEnemyCombatModes[index] = enemy.combat.mode;
     });
 
     this.projectileSystem.update(deltaSeconds, {
@@ -691,8 +717,14 @@ class ShootingGame {
       arenaHalfSize: GAME_CONFIG.arenaSize * 0.5,
       player: this.player,
       enemies: this.enemies.map((enemy) => enemy.actor),
-      onActorDamaged: (actorId, damage) => this.applyDamage(actorId, damage, timeSeconds)
+      onActorDamaged: (actorId, damage, impactPosition) =>
+        this.applyDamage(actorId, damage, impactPosition, timeSeconds),
+      onWorldImpact: (impactPosition) => this.audio.playArrowImpact(impactPosition, "surface")
     });
+    this.audio.updateEnemyFootsteps(
+      deltaSeconds,
+      this.enemies.map((enemy) => enemy.actor)
+    );
 
     this.updateSmokeGrenades(deltaSeconds);
     this.updateActorRecovery(deltaSeconds);
@@ -921,7 +953,13 @@ class ShootingGame {
     this.trajectoryPositions[offset + 2] = point.z;
   }
 
-  private applyDamage(actorId: string, damage: number, timeSeconds: number): void {
+  private applyDamage(
+    actorId: string,
+    damage: number,
+    impactPosition: THREE.Vector3,
+    timeSeconds: number
+  ): void {
+    this.audio.playArrowImpact(impactPosition, "actor");
     if (this.player.id === actorId) {
       this.player.health = Math.max(0, this.player.health - damage);
       this.player.hitFlash = 0.35;
@@ -1403,6 +1441,7 @@ class ShootingGame {
     origin: THREE.Vector3,
     target: THREE.Vector3
   ): void {
+    this.audio.playSmokeThrow(origin);
     const offset = target.clone().sub(origin);
     const planarDistance = offset.clone().setY(0).length();
     const flightSeconds = THREE.MathUtils.clamp(
@@ -1649,6 +1688,7 @@ class ShootingGame {
     this.playerCombat.chargeSeconds = 0;
     this.playerCombat.cooldownRemaining = 0;
     this.playerSmokeCooldownRemaining = 0;
+    this.previousPlayerCombatMode = "idle";
     this.trajectoryLine.visible = false;
     this.trajectoryImpactMarker.visible = false;
 
@@ -1681,6 +1721,7 @@ class ShootingGame {
 
     this.overlay = "intro";
     this.input.exitPointerLock();
+    this.previousEnemyCombatModes = this.enemies.map((enemy) => enemy.combat.mode);
   }
 
   private getRandomPlayerSpawn(): THREE.Vector3 {
