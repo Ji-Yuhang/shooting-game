@@ -43,7 +43,12 @@ type ProjectileUpdateContext = {
   arenaHalfSize: number;
   player: ActorState;
   enemies: ActorState[];
-  onActorDamaged: (actorId: string, damage: number) => void;
+  onActorDamaged: (
+    actorId: string,
+    damage: number,
+    impactPosition: THREE.Vector3
+  ) => void;
+  onWorldImpact?: (impactPosition: THREE.Vector3) => void;
 };
 
 export class ProjectileSystem {
@@ -255,7 +260,11 @@ export class ProjectileSystem {
           .copy(probeStart)
           .lerp(probeEnd, actorHit.fraction)
           .addScaledVector(direction, -GAME_CONFIG.combat.projectileTipOffset);
-        context.onActorDamaged(actorHit.actor.id, GAME_CONFIG.combat.damage);
+        context.onActorDamaged(
+          actorHit.actor.id,
+          GAME_CONFIG.combat.damage,
+          projectile.state.position.clone()
+        );
         this.addDebugTrace(probeStart, probeStart.clone().lerp(probeEnd, actorHit.fraction), "#4fe18f");
         this.addDebugPoint(projectile.state.position, "#58f09a", 0.1, 1.15);
         this.scene.remove(projectile.mesh);
@@ -270,6 +279,7 @@ export class ProjectileSystem {
           "#ff4d4d"
         );
         this.addDebugPoint(projectile.state.position, "#ff7171", 0.12, 1.25);
+        context.onWorldImpact?.(projectile.state.position.clone());
         continue;
       }
 

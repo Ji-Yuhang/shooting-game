@@ -22,6 +22,7 @@ type PlayerCombatContext = {
   projectileSystem: ProjectileSystem;
   timeSeconds: number;
   showMessage: (text: string) => void;
+  onShotFired?: (ownerId: string, origin: THREE.Vector3) => void;
 };
 
 export class CombatSystem {
@@ -74,8 +75,17 @@ export class CombatSystem {
   }
 
   private tryFirePlayerShot(context: PlayerCombatContext): void {
-    const { state, player, cameraRig, world, obstacles, projectileSystem, timeSeconds, showMessage } =
-      context;
+    const {
+      state,
+      player,
+      cameraRig,
+      world,
+      obstacles,
+      projectileSystem,
+      timeSeconds,
+      showMessage,
+      onShotFired
+    } = context;
     const rawChargeRatio = computeChargeRatio(
       state.chargeSeconds,
       GAME_CONFIG.combat.minChargeSeconds,
@@ -150,6 +160,7 @@ export class CombatSystem {
       color: "#ead9ac",
       gravityScale: this.getGravityScale(shotDistance, chargeRatio)
     });
+    onShotFired?.(player.id, shotOrigin);
 
     state.cooldownRemaining = GAME_CONFIG.combat.cooldownSeconds;
     state.mode = "cooldown";
@@ -160,7 +171,8 @@ export class CombatSystem {
     target: THREE.Vector3,
     projectileSystem: ProjectileSystem,
     world: RAPIER.World,
-    obstacles: ObstacleSpec[]
+    obstacles: ObstacleSpec[],
+    onShotFired?: (ownerId: string, origin: THREE.Vector3) => void
   ): boolean {
     const origin = this.getEnemyShotOrigin(enemy);
     const toTarget = target.clone().sub(origin);
@@ -214,6 +226,7 @@ export class CombatSystem {
       color: "#d77f6d",
       gravityScale: this.getGravityScale(origin.distanceTo(target), 0.68)
     });
+    onShotFired?.(enemy.id, origin);
 
     return true;
   }
