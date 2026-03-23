@@ -49,6 +49,7 @@ type AIStepContext = {
   combatSystem: CombatSystem;
   smokes: SmokeCloudState[];
   deploySmoke: (throwerId: string, target: THREE.Vector3, reason: "rescue" | "attack") => boolean;
+  onEnemyShotFired?: (ownerId: string, origin: THREE.Vector3) => void;
 };
 
 type TeamDirectives = {
@@ -455,7 +456,8 @@ export class AISystem {
         target,
         context.projectileSystem,
         context.world,
-        context.obstacles
+        context.obstacles,
+        context.onEnemyShotFired
       );
       if (fired) {
         enemy.attackCooldownRemaining =
